@@ -1,0 +1,124 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: core-postgres
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_USER: ${DB_USER:-coredev}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-coredev}
+      POSTGRES_DB: ${DB_NAME:-core}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: Asia/Jakarta
+    
+    ports:
+      - "${DB_EXTERNAL_PORT:-9832}:5432"
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-coredev} -d ${DB_NAME:-core}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    
+    networks:
+      - core-network
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: core-memcached
+    restart: unless-stopped
+    command: memcached -m 64 -c 8192 -t 4 -v
+    ports:
+      - "${MEMCACHED_PORT:-11511}:11211"
+    healthcheck:
+      test: ["CMD-SHELL", "echo stats | nc -w 1 127.0.0.1 11211 | grep -q pid"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - core-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: core-app
+    restart: unless-stopped
+    
+    environment:
+      APP_NAME: ${APP_NAME:-Core Service}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      APP_PORT: ${APP_PORT:-:11082}
+      APP_PATH: ${APP_PATH:-core}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-dev}
+      DB_MAIN: postgres://${DB_USER:-coredev}:${DB_PASSWORD:-coredev}@postgres:5432/${DB_NAME:-core}?sslmode=disable&search_path=core
+      MEMCACHED_HOST: memcached:11211
+      
+      # Timezone
+      TZ: Asia/Jakarta
+    
+    ports:
+      - "${APP_EXTERNAL_PORT:-11082}:11082"
+    
+    volumes:
+      - .:/app
+      - /app/tmp
+      - go-mod-cache:/go/pkg/mod
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+    
+    networks:
+      - core-network
+
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: core-app-prod
+    restart: unless-stopped
+    profiles:
+      - production
+    
+    environment:
+      APP_NAME: ${APP_NAME:-Core Service}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      APP_PORT: ${APP_PORT:-:11082}
+      APP_PATH: ${APP_PATH:-core}
+      DEPLOYMENT_MODE: prod      
+      DB_MAIN: postgres://${DB_USER:-coredev}:${DB_PASSWORD:-coredev}@postgres:5432/${DB_NAME:-core}?sslmode=disable&search_path=core
+      MEMCACHED_HOST: memcached:11211
+      
+      TZ: Asia/Jakarta
+    
+    ports:
+      - "${APP_EXTERNAL_PORT:-11082}:11082"
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
+    networks:
+      - core-network
+
+networks:
+  core-network:
+    driver: bridge
+    name: core-network
+
+volumes:
+  postgres_data:
+    name: core-postgres-data
+  go-mod-cache:
+    name: core-go-mod-cache
